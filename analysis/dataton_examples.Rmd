@@ -1,0 +1,182 @@
+---
+title: "Datatón"
+author: "Roberto González"
+date: "2024-08-22"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+This document provides examples on how to work with data such as the INEGI Census and the National Directory of Economic Units (DENUE).
+
+```{r}
+
+# Get rid of scientific notation
+options(scipen = 999999)
+
+# Load packages to be used
+# This part of the code checks if 'pacman' is installed and installs it if it is not
+if (!require('pacman')) {
+  install.packages('pacman')
+}
+
+# Now we load the packages (pacman installs them if needed)
+pacman::p_load(readr, dplyr, ggplot2, stringr, sf, RColorBrewer)
+
+```
+
+# Importing objects in R
+
+First we will see how to import the *shapefiles* data. A shapefile is an object containing some sort of geometric information that allows us to create visualizations. In this case our shapefiles are polygons that define electoral sections.
+
+```{r}
+# Import shapefile at the electoral section level
+Sys.setenv(OGR_GEOMETRY_ACCEPT_UNCLOSED_RING = "NO") # <- This ignores polygons which are not closed
+secciones = st_read("../../Dataton_src/MGS_SHAPEFILE_19OCT21/MGS_SHAPEFILE_19OCT21/SECCION.shp")
+
+```
+
+# Plotting maps
+
+Once we have read in the shapefiles we get a small descirption of the **projection** used for the map and the general coordinates used.
+
+We can now plot a simple map.
+
+```{r}
+# Make map of Mexico
+ggplot()+
+  geom_sf(data = secciones, 
+          color = "grey", 
+          fill = "white", 
+          size = 0.1)+
+  theme_minimal()
+```
+
+And we can zoom into one particular State if we filter the shapefile's rows. Suppose we want to plot San Luis Potosi, then we can do:
+
+```{r}
+# Filter SLP sections
+slp = secciones |>
+  filter(ENTIDAD == 24)
+
+# Plot the sections in SLP
+ggplot()+
+  geom_sf(data = slp, 
+          color = "grey", 
+          fill = "white", 
+          size = 0.1)+
+  theme_minimal()
+```
+
+Now that looks nice but it is actually useless. We would like to add census data to each seccion electoral to get some statistic.
+
+For the rest of the analysis I will restrict to using San Luis Potosi's data, but extending this to the whole country would be the same, just using the whole 'secciones' object we defined above instead of keeping only the 'slp' data.
+
+```{r}
+
+# Read in data from the 2020 census at the electoral section level
+censo = read_csv("../../Dataton_src/Censo_2020/conjunto_de_datos/INE_SECCION_2020.csv") |>
+  janitor::clean_names()
+
+# Add the census data as columns to the electoral sections 
+slp_w_vars = left_join(slp, censo,
+                       by = c("SECCION" = "seccion",
+                              "ENTIDAD" = "entidad",
+                              "MUNICIPIO" = "municipio")) |>
+  mutate(area_seccion_m2 = st_area(geometry),
+         area_seccion_km2 = area_seccion_m2/1000,
+         hogs_km2 = tothog/area_seccion_km2,
+         share_pea = pea/pobtot)
+
+```
+
+We could ask ourselves, what is the share of people in the economically active population in each electoral section?
+
+```{r}
+
+# Plot density
+ggplot()+
+  # This layer maps the electoral sections and fills each one according to the 
+  # population density
+  geom_sf(data = slp_w_vars, aes(fill = as.numeric(share_pea)), color = "grey90")+
+  scale_fill_gradient(low = "white", high = "#750014", na.value = "deepskyblue2")+
+  labs(fill = "PEA como % de Pob. Total")+
+  theme_minimal()+
+  theme(legend.position = "bottom")
+
+```
+
+# Spatial matches
+
+```{r}
+# Import data from DENUE
+denue = read_csv("../../Dataton_src/DENUE/conjunto_de_datos/denue_inegi_46321-46531_.csv") |>
+  # Make the content of the variable 'nombre_act' be lowercase
+  mutate(nombre_act = str_to_lower(nombre_act)) |>
+  # Keep only observations with 'farm' in the actvity name
+  # Make sure these are only 'farm'acias!!!
+  filter(str_detect(nombre_act, "farm"))
+```
+
+
+Now, from DENUE we have the exact location where each drug store is located. That is, we have the longitude and latitude of the building where the drug store is. We would like to know, for example, how many drug stores there are in a certain electoral section.
+
+Without having to do this, we could first plot the (longitude, latitude) points and overlay the map from electoral sections to get a visual idea of what the code will do.
+
+We do this the following way. The first line of code tells R that in the 'denue' object, we have the columns 'longitud' and 'latitud' which are coordinates. Latitude and Longitude are stored in the 'map projection' with crs code 4326. But we know our electoral sections data is mapped with the 'map projection' called 'Lambert Conformal Conic' and we have no clue what the crs code associated to that projection is.
+
+Don't worry! R can match the coordinate system of both objects without us having to worry. This coordinate match is what the second line of the code is doing.
+
+Now everything is in the same projection and thus the map will be right (at least in the sense that everything is in the same projection).
+
+```{r}
+# Spatial join
+farmacias = st_as_sf(denue, coords = c("longitud", "latitud"), crs = 4326) |>
+  st_transform(st_crs(slp_w_vars)) # This gets the projection code of slp_w_vars and transforms the denue coordinates to this projection
+
+# Keep the ones from SLP
+slp_farmacias = farmacias |>
+  filter(cve_ent == "24")
+```
+
+Now let's plot the locations of drug stores in SLP.
+
+```{r}
+# Map the electoral sections and add a point per drug store
+ggplot()+
+  geom_sf(data = slp_w_vars, fill = "white", color = "grey80")+
+  geom_sf(data = slp_farmacias, color = "#750014", alpha = 0.05, size = 0.5)+
+  theme_minimal()
+```
+
+That looks nice but, for example, we only see bulks of red in a small area. We do not really know how many drug stores there are nor could we provide some good guess based off this. How can we improve this map?
+
+One idea: Count the number of drug stores at each electoral section and fill each electoral section based on that count.
+
+To do this we tell R something along the lines of 'Hi, I have these polygons (electoral sections) and some points (longitude and latitude of each drug store). Please tell me in which polygon is each point located.'
+
+```{r}
+# Count number of drug stores per electoral section
+# First add to each drug store row, the info of the electoral section
+# R will look for the electoral section in which each point (drug store) lies once they are projected and it will associate the electoral section info to all dots that land in that electoral section
+slp_farm_secc = st_join(slp_w_vars, slp_farmacias) |>
+  # We tell R to compute stuff assuming every row with the same value for 'SECCION' should be aggregated together
+  group_by(SECCION) |>
+  # We tell R to count the number of drug stores (rows) at each electoral section
+  summarise(farm_num = n())
+```
+
+And now we can plot a map filling each electoral section according to the number of drug stores there:
+
+```{r}
+# Map the electoral sections and fill them according to the count of drug stores
+ggplot()+
+  geom_sf(data = slp_farm_secc, aes(fill = farm_num), color = "grey80")+
+  scale_fill_gradient(low = "white", high = "#750014", na.value = "deepskyblue2")+
+  labs(fill = "Number of Drug Stores")+
+  theme_minimal()+
+  theme(legend.position = "bottom")
+```
+
+We can now notice that a red bulk we saw before was more due to the size of the points we used to pinpoint drug stores than due to there being a lot of drug stores in that particular location.
