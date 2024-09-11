@@ -39,7 +39,7 @@ secciones = st_read("../../Dataton_src/MGS_SHAPEFILE_19OCT21/MGS_SHAPEFILE_19OCT
 
 # Plotting maps
 
-Once we have read in the shapefiles we get a small descirption of the **projection** used for the map and the general coordinates used.
+Once we have read in the shapefiles we get a small description of the **projection** used for the map and the general coordinates used.
 
 We can now plot a simple map.
 
@@ -109,6 +109,8 @@ ggplot()+
 
 # Spatial matches
 
+Now, from DENUE we have the exact location where each drug store is located. That is, we have the longitude and latitude of the building where the drug store is. We would like to know, for example, how many drug stores there are in a certain electoral section.
+
 ```{r}
 # Import data from DENUE
 denue = read_csv("../../Dataton_src/DENUE/conjunto_de_datos/denue_inegi_46321-46531_.csv") |>
@@ -119,12 +121,9 @@ denue = read_csv("../../Dataton_src/DENUE/conjunto_de_datos/denue_inegi_46321-46
   filter(str_detect(nombre_act, "farm"))
 ```
 
-
-Now, from DENUE we have the exact location where each drug store is located. That is, we have the longitude and latitude of the building where the drug store is. We would like to know, for example, how many drug stores there are in a certain electoral section.
-
 Without having to do this, we could first plot the (longitude, latitude) points and overlay the map from electoral sections to get a visual idea of what the code will do.
 
-We do this the following way. The first line of code tells R that in the 'denue' object, we have the columns 'longitud' and 'latitud' which are coordinates. Latitude and Longitude are stored in the 'map projection' with crs code 4326. But we know our electoral sections data is mapped with the 'map projection' called 'Lambert Conformal Conic' and we have no clue what the crs code associated to that projection is.
+We do this the following way. The first line of code tells R that in the 'denue' object, we have the columns 'longitud' and 'latitud' which are coordinates. Latitude and Longitude are stored in the 'map projection' with crs code 4326. But we know our electoral sections data is mapped with the 'map projection' called 'Lambert Conformal Conic' and we have no clue what the crs code associated to that projection is (athough we could just Google it to know this).
 
 Don't worry! R can match the coordinate system of both objects without us having to worry. This coordinate match is what the second line of the code is doing.
 
@@ -162,7 +161,7 @@ To do this we tell R something along the lines of 'Hi, I have these polygons (el
 # R will look for the electoral section in which each point (drug store) lies once they are projected and it will associate the electoral section info to all dots that land in that electoral section
 slp_farm_secc = st_join(slp_w_vars, slp_farmacias) |>
   # We tell R to compute stuff assuming every row with the same value for 'SECCION' should be aggregated together
-  group_by(SECCION) |>
+  group_by(ENTIDAD, MUNICIPIO, SECCION) |>
   # We tell R to count the number of drug stores (rows) at each electoral section
   summarise(farm_num = n())
 ```
@@ -180,3 +179,29 @@ ggplot()+
 ```
 
 We can now notice that a red bulk we saw before was more due to the size of the points we used to pinpoint drug stores than due to there being a lot of drug stores in that particular location.
+
+Notice that we have one map which shows the economically active population as a share of total population at the electoral section level and we also have a map with the number of drug stores in each electoral section. The economically active map showed a lot of *variation* in its colors across the electoral sections. And the map with the number of drug stores looks white almost everywhere. This might be an indication that economically active population shares do not help in knowing which electoral sections have drug stores. But how can we get a better ---more formal--- sense of this intuition? We can compute the correlation between both statistics.
+
+```{r}
+pea_numfarm = slp_w_vars |> 
+  select(ENTIDAD, MUNICIPIO, SECCION, share_pea) |>
+  inner_join(tibble(slp_farm_secc |> select(ENTIDAD, MUNICIPIO, SECCION, farm_num)))
+
+cor(pea_numfarm$share_pea, pea_numfarm$farm_num, use = "complete.obs")
+
+ggplot(data = pea_numfarm, aes(x = share_pea, y = farm_num))+
+  geom_point(color = "#750014")+
+  geom_smooth(method = "lm", se = FALSE, color = "black", size = 1)+
+  labs(y = "Número de Farmacias",
+       x = "PEA como % de Población Total")+
+  theme_minimal()
+
+ggplot(data = pea_numfarm, aes(x = share_pea, y = farm_num))+
+  geom_point(color = "#750014", alpha = 0.10)+
+  geom_smooth(method = "lm", se = FALSE, color = "black", size = 1)+
+    labs(y = "Número de Farmacias",
+       x = "PEA como % de Población Total")+
+  theme_minimal()
+
+```
+
